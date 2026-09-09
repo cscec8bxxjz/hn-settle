@@ -375,7 +375,7 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
         <div id="settlementFields" style="display:none;" data-page-node-id="Aa1JqmnGQMWjelpG2TK0Nn">
           <div class="group" data-page-node-id="5GYXW9mUAyuxMovW3Gjl67">
             <div class="group-title" data-page-node-id="HHY1h2X0CuFMUFzwrQn10U">🧾 结算进展</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;" data-page-node-id="LBKXBj2uEp7Prj9jdnnpGn">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;" data-page-node-id="LBKXBj2uEp7Prj9jdnnpGn">
               <div class="form-group" style="margin-bottom:0;" data-page-node-id="H3dv5CwTC6FnjlEHZOD9Tp">
                 <label style="font-size:13px;" data-page-node-id="kBZxyW5MHZaq4dMWPtxUMD">包保领导</label>
                 <input type="text" id="stlLeader" style="font-size:14px;" data-page-node-id="Ja1R1Vh1rG7We1VYMraSLT">
@@ -383,6 +383,10 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
               <div class="form-group" style="margin-bottom:0;" data-page-node-id="gr7I2XcAUMLNxCwLl3LBZf">
                 <label style="font-size:13px;" data-page-node-id="ItgGDiNUvXlftx6VcpC1ke">要求完成结算时间 <span class="req" data-page-node-id="GDKSAAlw4qvIL5d9P0Kbj0">*</span></label>
                 <input type="date" id="stlRequiredDate" style="font-size:14px;" data-page-node-id="WoSEPVPwxyVoPy4L6iwLRa">
+              </div>
+              <div class="form-group" style="margin-bottom:0;">
+                <label style="font-size:13px;">催办结算时间</label>
+                <input type="date" id="stlUrgeDate" style="font-size:14px;">
               </div>
               <div class="form-group" style="margin-bottom:0;" data-page-node-id="Nhdyjfa5RsdiYFcrBCVaDW">
                 <label style="font-size:13px;" data-page-node-id="IiO0OpNF4T1DiCNJCEOgrh">结算方式 <span class="req" data-page-node-id="GBguJ8B1qyBx8AzSGwfEF6">*</span></label>
@@ -482,6 +486,7 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
               <col style="width:90px" data-page-node-id="kPVFlBafaoIHL4zyJumPlW">
               <col style="width:84px" data-page-node-id="z0NIdHmYEkMioUkDsMWbZF">
               <col style="width:104px" data-page-node-id="EFUHsm0Y5yG7JWG4cWCHrJ">
+              <col style="width:104px">
               <col style="width:88px" data-page-node-id="DKoj151c4FLhpside64qe5">
               <col style="width:100px" data-page-node-id="OK3oRQmhUXN1lKlmR772Iz">
               <col style="width:96px" data-page-node-id="MI6WV9fB5lgCOdWHbUah1O">
@@ -492,7 +497,7 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
             <thead data-page-node-id="rMqYbSevJZ5T8nNAzBjb3c">
               <tr data-page-node-id="V06hAaQ8H2Zyvc7tMsK6zi">
                 <th data-page-node-id="SKuZNPGZs1FIjUD1M8o3PT">#</th><th data-page-node-id="IFEzGiEzQ2T3EttAoCLq8O">项目经理</th><th data-page-node-id="pCjQdqEjnvO70fzvjb9v5S">项目简称</th>                <th data-page-node-id="wJbIPnqRfzWBtGcR2WGRtE">项目名称</th><th data-page-node-id="zKIhHlMroxNBiOxN74orSC">包保领导</th>
-                <th data-page-node-id="41ZSSGpYiqwAEUeGb7BiEQ">项目状态</th><th data-page-node-id="7GwYMN6dXd8ctt9vsK4Qsg">要求完成结算时间</th><th data-page-node-id="Inb9cGLpzANrbQ1OEGRN1C">结算方式</th><th data-page-node-id="ZVGja6tRPpzWoFEmBj3vuf">目标结算额(万)</th>
+                <th data-page-node-id="41ZSSGpYiqwAEUeGb7BiEQ">项目状态</th><th data-page-node-id="7GwYMN6dXd8ctt9vsK4Qsg">要求完成结算时间</th><th>催办结算时间</th><th data-page-node-id="Inb9cGLpzANrbQ1OEGRN1C">结算方式</th><th data-page-node-id="ZVGja6tRPpzWoFEmBj3vuf">目标结算额(万)</th>
                 <th data-page-node-id="hgeBnc3jASBnmza2rNUTfu">预估总成本(万)</th><th data-page-node-id="PJ6rgc4SkATeVeWKv0rKUm">目标效益(万)</th><th data-page-node-id="cRpw9Gl6U4TKo0dRiRgdCK">结算进展</th><th data-page-node-id="nKJXnei860DMYx0sPyy7X3">提交时间</th>
               </tr>
             </thead>
@@ -836,6 +841,7 @@ function onProjectSelect() {
   document.getElementById('stlLeader').value =
     (currentProject.leader || (pre && pre.leader) || '');
   document.getElementById('stlRequiredDate').value = pre && pre.required_date ? pre.required_date : '';
+  document.getElementById('stlUrgeDate').value = pre && pre.urge_date ? pre.urge_date : '';
   document.getElementById('stlMethod').value = pre && pre.method ? pre.method : '';
   document.getElementById('stlTargetAmount').value = pre && pre.target_amount != null ? Number(pre.target_amount).toFixed(2) : '';
   document.getElementById('stlEstCost').value = pre && pre.est_cost != null ? Number(pre.est_cost).toFixed(2) : '';
@@ -910,6 +916,7 @@ function onSubmit(e) {
     leader: document.getElementById('stlLeader').value.trim(),
     status,
     requiredDate: document.getElementById('stlRequiredDate').value,
+    urgeDate: document.getElementById('stlUrgeDate').value,
     method: document.getElementById('stlMethod').value.trim(),
     targetAmount: num('stlTargetAmount'),
     estCost: num('stlEstCost'),
@@ -1095,7 +1102,7 @@ function loadDashboard() {
   const tb = document.getElementById('detailTable');
   tb.innerHTML = '';
   if (!recs.length) {
-    tb.innerHTML = '<tr><td colspan="13"><div class="empty"><div class="empty-icon">📭</div>本周暂无结算进展提交记录</div></td></tr>';
+    tb.innerHTML = '<tr><td colspan="14"><div class="empty"><div class="empty-icon">📭</div>本周暂无结算进展提交记录</div></td></tr>';
     return;
   }
   recs.forEach((r, i) => {
@@ -1108,6 +1115,7 @@ function loadDashboard() {
       '<td class="cell-name">' + esc(r.leader || '') + '</td>' +
       '<td>' + statusBadge(r.status) + '</td>' +
       '<td>' + esc(fmtDate(r.requiredDate)) + '</td>' +
+      '<td>' + esc(fmtDate(r.urgeDate)) + '</td>' +
       '<td>' + esc(r.method || '') + '</td>' +
       '<td>' + fmt2(r.targetAmount) + '</td>' +
       '<td>' + fmt2(r.estCost) + '</td>' +
@@ -1132,12 +1140,12 @@ function currentTableRows() {
   const key = document.getElementById('weekSelector').value || weekKey(new Date());
   const store = { weeks: mergedWeeks() };
   const recs = (store.weeks[key] || []).slice().sort((a, b) => (a.manager > b.manager ? 1 : -1));
-  const rows = [['#', '项目经理', '项目简称', '项目名称', '包保领导', '项目状态', '要求完成结算时间', '结算方式',
+  const rows = [['#', '项目经理', '项目简称', '项目名称', '包保领导', '项目状态', '要求完成结算时间', '催办结算时间', '结算方式',
     '目标结算额(不含税,万)', '预估总成本(不含税,万)', '目标效益(不含税,万)',
     '本周结算进展', '下周结算计划', '目前存在的问题', '需分公司/公司协调事项', '本周对接的“甲方人员”', '提交时间']];
   recs.forEach((r, i) => {
     const l = r.lines || [];
-    rows.push([i + 1, r.manager, r.shortName, r.projectName, r.leader || '', r.status, r.requiredDate, r.method,
+    rows.push([i + 1, r.manager, r.shortName, r.projectName, r.leader || '', r.status, r.requiredDate, r.urgeDate || '', r.method,
       fmt2(r.targetAmount), fmt2(r.estCost), fmt2(r.targetBenefit),
       l[1] || '', l[2] || '', l[3] || '', l[4] || '', l[5] || '', fmtTime(r.ts)]);
   });
@@ -1149,7 +1157,7 @@ function exportExcel() {
   const { key, rows } = currentTableRows();
   if (rows.length <= 1) return showToast('本周暂无数据可导出', 'error');
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 5 }, { wch: 10 }, { wch: 14 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 12 },
+  ws['!cols'] = [{ wch: 5 }, { wch: 10 }, { wch: 14 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 12 },
     { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 50 }, { wch: 40 }, { wch: 40 }, { wch: 40 }, { wch: 24 }, { wch: 18 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '结算进展');
