@@ -123,6 +123,11 @@ body {
 }
 .group-divider { margin-top: 16px; padding-top: 14px; border-top: .5px solid var(--sep); }
 
+/* 字段栅格（改用 class，便于响应式；内联 grid 无法被媒体查询覆盖） */
+.field-grid { display: grid; gap: 12px; }
+.field-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.field-grid.mt { margin-top: 12px; }
+
 /* === Stats === */
 .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 16px; }
 .stat-card {
@@ -308,6 +313,20 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
   .card { padding: 20px; }
   .container, .container-wide { padding-left: 16px; padding-right: 16px; }
   .btn-block { border-radius: 14px; }
+  /* 表单字段：平板 2 列 */
+  .field-grid.cols-3 { grid-template-columns: repeat(2, 1fr); }
+  .group { padding: 15px; }
+  /* 明细表多了一列，放宽最小宽度保证可读（横向滚动） */
+  table { min-width: 1000px; }
+  .toolbar { gap: 10px; }
+  .toolbar .btn-sm { padding: 9px 14px; }
+}
+@media (max-width: 480px) {
+  /* 手机：字段单列，避免挤压 */
+  .field-grid.cols-3 { grid-template-columns: 1fr; }
+  .card { padding: 16px; }
+  .hero h2 { font-size: 26px; }
+  .toolbar .btn-sm { flex: 1 1 auto; text-align: center; }
 }
 
 /* 细滚动条 */
@@ -372,10 +391,17 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
           </div>
         </div>
 
+        <div id="urgeFields" style="display:none;">
+          <div class="form-group group">
+            <label>催办结算时间</label>
+            <input type="date" id="stlUrgeDate" style="font-size:14px;">
+          </div>
+        </div>
+
         <div id="settlementFields" style="display:none;" data-page-node-id="Aa1JqmnGQMWjelpG2TK0Nn">
           <div class="group" data-page-node-id="5GYXW9mUAyuxMovW3Gjl67">
             <div class="group-title" data-page-node-id="HHY1h2X0CuFMUFzwrQn10U">🧾 结算进展</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px;" data-page-node-id="LBKXBj2uEp7Prj9jdnnpGn">
+            <div class="field-grid cols-3" data-page-node-id="LBKXBj2uEp7Prj9jdnnpGn">
               <div class="form-group" style="margin-bottom:0;" data-page-node-id="H3dv5CwTC6FnjlEHZOD9Tp">
                 <label style="font-size:13px;" data-page-node-id="kBZxyW5MHZaq4dMWPtxUMD">包保领导</label>
                 <input type="text" id="stlLeader" style="font-size:14px;" data-page-node-id="Ja1R1Vh1rG7We1VYMraSLT">
@@ -384,16 +410,12 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
                 <label style="font-size:13px;" data-page-node-id="ItgGDiNUvXlftx6VcpC1ke">要求完成结算时间 <span class="req" data-page-node-id="GDKSAAlw4qvIL5d9P0Kbj0">*</span></label>
                 <input type="date" id="stlRequiredDate" style="font-size:14px;" data-page-node-id="WoSEPVPwxyVoPy4L6iwLRa">
               </div>
-              <div class="form-group" style="margin-bottom:0;">
-                <label style="font-size:13px;">催办结算时间</label>
-                <input type="date" id="stlUrgeDate" style="font-size:14px;">
-              </div>
               <div class="form-group" style="margin-bottom:0;" data-page-node-id="Nhdyjfa5RsdiYFcrBCVaDW">
                 <label style="font-size:13px;" data-page-node-id="IiO0OpNF4T1DiCNJCEOgrh">结算方式 <span class="req" data-page-node-id="GBguJ8B1qyBx8AzSGwfEF6">*</span></label>
                 <input type="text" id="stlMethod" list="methodList" placeholder="如：综合单价" style="font-size:14px;" data-page-node-id="tL8WC8ZvEkNmA1ym0kNZLF">
               </div>
             </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px;" data-page-node-id="Sn6uw83daEWDvW28eXh3b5">
+            <div class="field-grid cols-3 mt" data-page-node-id="Sn6uw83daEWDvW28eXh3b5">
               <div class="form-group" style="margin-bottom:0;" data-page-node-id="LOXAnk3MQd1QFZr87wKaLG">
                 <label style="font-size:13px;" data-page-node-id="JhNMT629Wv3gU0OHkKvjEt">目标结算额(不含税,万) <span class="req" data-page-node-id="Xk2n08aUC90y2eWPDuiaEs">*</span></label>
                 <input type="number" id="stlTargetAmount" step="0.01" min="0" style="font-size:14px;" data-page-node-id="5YHvV0OhkUAzeSsTj7mbDp">
@@ -835,6 +857,7 @@ function onProjectSelect() {
   document.getElementById('statusFields').style.display = 'block';
   document.getElementById('projectStatus').value = '';
   document.getElementById('settlementFields').style.display = 'none';
+  document.getElementById('urgeFields').style.display = 'none';
 
   // 预填结算数据（清单内项目自动带出，清单外留空）
   const pre = SETTLE_DATA[shortName];
@@ -853,8 +876,8 @@ function onProjectSelect() {
 
 function onStatusChange() {
   const st = document.getElementById('projectStatus').value;
-  const box = document.getElementById('settlementFields');
-  box.style.display = st ? 'block' : 'none';
+  document.getElementById('settlementFields').style.display = st ? 'block' : 'none';
+  document.getElementById('urgeFields').style.display = st ? 'block' : 'none';
 }
 
 function clearEditor() {
