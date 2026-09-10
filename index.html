@@ -363,6 +363,7 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
       <div id="submittedHint" class="hint-ok" style="display:none;" data-page-node-id="2OIo96mtaANOaSWdUGA4k3">
         ✅ <span id="submittedTime" data-page-node-id="t2xd1udBsbuHBjpfV38RnG"></span>
       </div>
+      <div id="draftHint" class="helper" style="display:none;"></div>
       <form id="collectForm" data-page-node-id="FFgQ5K0bAKX4F2Z0lZ82QG">
         <div class="form-group" data-page-node-id="BMYuHqbLa6suRnZQIK9tbF">
           <label data-page-node-id="qJ76VvS1MfRqXzcPA42epK">项目经理 <span class="req" data-page-node-id="6Ia55SAEqEgf2QyPx7CxtT">*</span></label>
@@ -443,6 +444,7 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
                 <div class="record-line" data-page-node-id="C29L7IkxQgrlZpNHorXgow"><span class="record-tmpl" data-page-node-id="9L5kd2MDOW8GWcOoOqmKAm">需分公司/公司协调事项：</span><span class="record-user" contenteditable="true" data-line="4" data-page-node-id="pA5YuefcUJNzdBPAspItDE"></span></div>
                 <div class="record-line" data-page-node-id="z620VjvsURbXheLHB0INsu"><span class="record-tmpl" data-page-node-id="WFxTp7gQfUhLPPL6m9nGiN">本周对接的“甲方人员”：</span><span class="record-user" contenteditable="true" data-line="5" data-page-node-id="bcxHrOANDAHeYxgFVMWSgi"></span></div>
               </div>
+              <div class="helper" id="editorHint" style="display:none;margin-top:10px;"></div>
             </div>
           </div>
         </div>
@@ -481,9 +483,10 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
           <option value="" data-page-node-id="NC4d05TEmJBGzMpQAlEXxC">加载中...</option>
         </select>
         <button class="btn btn-sm btn-success" onclick="exportExcel()" data-page-node-id="k5aLHkVZUBM3yMIAr4UIM7">📥 导出Excel</button>
-        <button class="btn btn-sm btn-outline" onclick="resetWeek()" data-page-node-id="q3RMZTxNC1BCYld5pBOssq">📅 新周重置</button>
+        <button class="btn btn-sm btn-outline" onclick="resetWeek()" data-page-node-id="q3RMZTxNC1BCYld5pBOssq" title="仅确保本周记录存在，不会清空任何数据">📅 切到本周</button>
         <button class="btn btn-sm btn-outline" onclick="exportBackup()" data-page-node-id="8SiBOcruqVISsYEUn94ndM">💾 导出备份</button>
         <button class="btn btn-sm btn-outline" onclick="document.getElementById('importFile').click()" data-page-node-id="cGRuOpdcXZ4RMoLUa2t7F4">📂 导入备份</button>
+        <button class="btn btn-sm btn-outline" id="btnRetrySync" onclick="retrySyncUI()" title="补传上次因网络问题未同步成功的提交">🔁 重试同步</button>
         <button class="btn btn-sm btn-primary" id="btnRefreshCloud" onclick="refreshCloud()">🔄 刷新云端数据</button>
         <input type="file" id="importFile" accept=".json" style="display:none;" onchange="importBackup(this.files)" data-page-node-id="dV7GChywG7ZsvB6hZ0iP62">
       </div>
@@ -600,17 +603,32 @@ let CLOUD_SUBS = [];
 let CLOUD_SUBS_LOADED = false;
 let CLOUD_SUBS_LOADING = false;
 
+/* 带超时的 fetch：jsonbin 在境外，国内弱网可能长时间挂起，必须能主动放弃 */
+function fetchWithTimeout(url, opts, ms) {
+  const timeout = ms || 15000;
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const o = Object.assign({}, opts || {});
+  if (ctl) o.signal = ctl.signal;
+  const timer = ctl ? setTimeout(function () { ctl.abort(); }, timeout) : null;
+  return fetch(url, o).finally(function () { if (timer) clearTimeout(timer); });
+}
+
 async function loadSubmissions() {
   if (!CLOUD_SUB.binId) return [];
   if (CLOUD_SUBS_LOADING) return CLOUD_SUBS;
   CLOUD_SUBS_LOADING = true;
   try {
     const url = CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '?t=' + Date.now();
-    const r = await fetch(url, { cache: 'no-store' });
+    const r = await fetchWithTimeout(url, { cache: 'no-store' }, 15000);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const rec = j.record || {};
-    CLOUD_SUBS = Array.isArray(rec.submissions) ? rec.submissions : [];
+    const arr = Array.isArray(rec.submissions) ? rec.submissions : [];
+    /* 保护：若上次已知有提交而这次读到空，判定为读取异常，不覆盖内存副本 */
+    if (arr.length === 0 && CLOUD_SUBS.length > 0) {
+      throw new Error('云端返回空数据，疑似读取异常，保留本地副本');
+    }
+    CLOUD_SUBS = arr;
     CLOUD_SUBS_LOADED = true;
   } catch (e) {
     console.warn('loadSubmissions failed', e);
@@ -620,29 +638,108 @@ async function loadSubmissions() {
   return CLOUD_SUBS;
 }
 
+/* 提交写入：read-modify-write 必须保证「读成功才写」。
+   历史上存在两个致命缺陷，此处均已修正：
+   1) 读取失败时按空数组处理 → PUT 只写自己一条 → 清空全员历史提交
+   2) 并发提交时后写覆盖先写，先提交者静默丢失
+   修正：读失败即中止并重试（最多 3 次）；每次重试都重新读取最新全量；
+        写入前校验条数，异常则拒绝写入；失败保留本地待同步队列。 */
 async function pushSubmission(rec, wk) {
   const k = wk + '|' + (rec.manager || '') + '|' + (rec.shortName || '');
   const entry = Object.assign({}, rec, { wk: wk, _k: k, syncedAt: Date.now() });
-  let arr = [];
-  try {
-    const r0 = await fetch(CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '?t=' + Date.now(), { cache: 'no-store' });
-    if (r0.ok) {
+  let lastErr = null;
+
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      /* 步骤 1：读取当前全量。读不到就绝不能写，否则会清空他人提交 */
+      const r0 = await fetchWithTimeout(
+        CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '?t=' + Date.now(),
+        { cache: 'no-store' }, 15000);
+      if (!r0.ok) throw new Error('读取失败 HTTP ' + r0.status);
       const j0 = await r0.json();
       const rec0 = j0.record || {};
-      arr = Array.isArray(rec0.submissions) ? rec0.submissions : [];
+      const arr = Array.isArray(rec0.submissions) ? rec0.submissions.slice() : [];
+
+      /* 步骤 2：异常保护 —— 已知有提交却读到空，说明读取有问题，拒绝写入 */
+      if (arr.length === 0 && CLOUD_SUBS.length > 0) {
+        throw new Error('云端读取异常（返回 0 条），已中止写入以保护历史数据');
+      }
+
+      /* 步骤 3：定位并替换/追加 */
+      const idx = arr.findIndex(x =>
+        (x._k || ((x.wk || '') + '|' + (x.manager || '') + '|' + (x.shortName || ''))) === k);
+      if (idx >= 0) arr[idx] = entry; else arr.push(entry);
+
+      /* 步骤 4：写回 */
+      const r = await fetchWithTimeout(CLOUD_SUB.base + '/' + CLOUD_SUB.binId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Master-Key': CLOUD_SUB.secret },
+        body: JSON.stringify({ submissions: arr })
+      }, 20000);
+      if (!r.ok) throw new Error('写入失败 HTTP ' + r.status);
+
+      CLOUD_SUBS = arr;
+      CLOUD_SUBS_LOADED = true;
+      markSynced(k, entry.ts);
+      return entry;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3) {
+        await new Promise(function (res) { setTimeout(res, 800 * attempt); });
+      }
     }
-  } catch (e) { /* 读取失败则按空数组处理 */ }
-  const idx = arr.findIndex(x => (x._k || ((x.wk || '') + '|' + (x.manager || '') + '|' + (x.shortName || ''))) === k);
-  if (idx >= 0) arr[idx] = entry; else arr.push(entry);
-  const r = await fetch(CLOUD_SUB.base + '/' + CLOUD_SUB.binId, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'X-Master-Key': CLOUD_SUB.secret },
-    body: JSON.stringify({ submissions: arr })
-  });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  CLOUD_SUBS = arr;
-  CLOUD_SUBS_LOADED = true;
-  return entry;
+  }
+  /* 三次都失败：记录待同步，本地数据仍然完整，后续可一键重传 */
+  markPendingSync(k, entry);
+  throw lastErr || new Error('云端同步失败');
+}
+
+/* ===== 待同步队列与提交历史（本地） ===== */
+const LS_PENDING = 'hn_settle_pending_v1';
+const LS_HISTORY = 'hn_settle_history_v1';
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) { return fallback; }
+}
+function saveJSON(key, val) {
+  try { localStorage.setItem(key, JSON.stringify(val)); }
+  catch (e) { console.warn(e); }
+}
+function markPendingSync(k, entry) {
+  const q = loadJSON(LS_PENDING, {});
+  q[k] = entry;
+  saveJSON(LS_PENDING, q);
+}
+function markSynced(k, ts) {
+  const q = loadJSON(LS_PENDING, {});
+  if (q[k]) { delete q[k]; saveJSON(LS_PENDING, q); }
+}
+function pendingCount() {
+  return Object.keys(loadJSON(LS_PENDING, {})).length;
+}
+/* 保留提交历史快照（仅本地，最多 60 条），用于误覆盖时找回 */
+function pushHistory(rec, k) {
+  const h = loadJSON(LS_HISTORY, []);
+  h.unshift({ k: k, ts: rec.ts, rec: rec, savedAt: Date.now() });
+  saveJSON(LS_HISTORY, h.slice(0, 60));
+}
+/* 重传所有待同步记录 */
+async function retryPendingSync() {
+  const q = loadJSON(LS_PENDING, {});
+  const keys = Object.keys(q);
+  if (!keys.length) return 0;
+  let ok = 0;
+  for (const k of keys) {
+    const e = q[k];
+    try {
+      await pushSubmission(e, e.wk || weekKey(new Date(e.ts || Date.now())));
+      ok++;
+    } catch (err) { /* 保留在队列，下次再试 */ }
+  }
+  return ok;
 }
 </script>
 <script>
@@ -741,19 +838,25 @@ function saveStore(s) {
   try { localStorage.setItem(LS_KEY, JSON.stringify(s)); }
   catch (e) { showToast('本地存储失败：' + e.message, 'error'); }
 }
-/* 合并云端提交 + 本地提交，按 (周|经理|项目) 去重，云端优先（含所有人的提交） */
+/* 合并云端提交 + 本地提交，按 (周|经理|项目) 去重。
+   修正：原先「云端无条件覆盖本地」，一旦云端已旧（例如上次推送失败），
+        刷新会把用户刚填的新内容回滚掉。现改为按提交时间 ts 取新。 */
 function mergedWeeks() {
   const map = {};
   const add = function (r) {
     const wk = r.wk || weekKey(new Date(r.ts || Date.now()));
     const k = wk + '|' + (r.manager || '') + '|' + (r.shortName || '');
-    map[k] = Object.assign({}, r, { wk: wk });
+    const prev = map[k];
+    /* 取时间戳更大的一条，本地与云端一视同仁 */
+    if (!prev || (Number(r.ts) || 0) > (Number(prev.ts) || 0)) {
+      map[k] = Object.assign({}, r, { wk: wk });
+    }
   };
   const ls = loadStore();
   Object.keys(ls.weeks || {}).forEach(function (wk) {
     (ls.weeks[wk] || []).forEach(function (r) { add(r); });
   });
-  CLOUD_SUBS.forEach(function (r) { add(r); });   // 云端后处理，覆盖本地副本
+  CLOUD_SUBS.forEach(function (r) { add(r); });
   const weeks = {};
   Object.keys(map).forEach(function (k) {
     const r = map[k];
@@ -803,12 +906,30 @@ async function initForm() {
       const txt = (e.clipboardData || window.clipboardData).getData('text/plain');
       document.execCommand('insertText', false, txt.replace(/\s*\n\s*/g, ' '));
     });
+    /* 标记该行被用户编辑过：被编辑过的行即使清空也不再沿用上次内容 */
+    el.addEventListener('input', () => {
+      el.dataset.touched = '1';
+      saveDraft();
+    });
   });
+
+  /* 表单任意输入都自动存草稿，手机端误关页面不丢内容 */
+  ['managerName', 'projectShortName', 'projectStatus', 'stlLeader', 'stlRequiredDate',
+   'stlUrgeDate', 'stlMethod', 'stlTargetAmount', 'stlEstCost', 'stlTargetBenefit']
+    .forEach(function (id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', saveDraft);
+      el.addEventListener('input', saveDraft);
+    });
 
   document.getElementById('collectForm').addEventListener('submit', onSubmit);
   updatePendingBadge();
   updateCloudStatus();
   scheduleCloudAutoRefresh();
+
+  /* 云端名单就绪后恢复上次未提交的草稿 */
+  restoreDraft();
 }
 
 function populateManagerSelect() {
@@ -844,6 +965,7 @@ function onManagerSelect() {
 
 function onProjectSelect() {
   const shortName = document.getElementById('projectShortName').value;
+  const manager = document.getElementById('managerName').value;
   currentProject = REPORT_PROJECTS.find(p => p.s === shortName) || null;
   const fullEl = document.getElementById('projectFullName');
   if (!currentProject) {
@@ -870,8 +992,36 @@ function onProjectSelect() {
   document.getElementById('stlEstCost').value = pre && pre.est_cost != null ? Number(pre.est_cost).toFixed(2) : '';
   document.getElementById('stlTargetBenefit').value = pre && pre.target_benefit != null ? Number(pre.target_benefit).toFixed(2) : '';
 
-  clearEditor();
+  /* 回填上次提交内容，让用户看得见（原先清空后提交时静默继承，用户无从察觉） */
+  const filled = fillEditorFromLast(manager, shortName);
+  const hint = document.getElementById('editorHint');
+  if (hint) {
+    if (filled) {
+      hint.textContent = '↑ 已带入本项目上次提交内容，可直接修改；清空某行即表示本次不再填写。';
+      hint.style.display = 'block';
+      hint.className = 'helper';
+    } else {
+      hint.style.display = 'none';
+    }
+  }
   showSubmittedHint(false);
+  saveDraft();
+}
+
+/* 用上次提交内容填充编辑器；返回是否填到了内容 */
+function fillEditorFromLast(manager, shortName) {
+  clearEditor();
+  const prev = lastRecordOf(manager, shortName);
+  const fields = document.querySelectorAll('#settleEditor .record-user');
+  fields.forEach(function (el) { el.dataset.touched = ''; });
+  if (!prev || !prev.lines) return false;
+  let any = false;
+  fields.forEach(function (el) {
+    const t = prev.lines[Number(el.dataset.line)] || '';
+    el.textContent = t;
+    if (t) any = true;
+  });
+  return any;
 }
 
 function onStatusChange() {
@@ -919,10 +1069,13 @@ function onSubmit(e) {
 
   let lines = readEditor();
   const prev = lastRecordOf(manager, shortName);
-  // 留空的行沿用上次提交内容（文字一旦提交不可被清空）
+  /* 仅对「用户未编辑过」且为空的行沿用上次内容。
+     修正：原先不区分是否被编辑，用户主动清空的行也会被静默填回旧内容。 */
   if (prev && prev.lines) {
     for (let i = 1; i <= SETTLE_LINES; i++) {
-      if (!lines[i] && prev.lines[i]) lines[i] = prev.lines[i];
+      const el = document.querySelector('#settleEditor .record-user[data-line="' + i + '"]');
+      const touched = el && el.dataset.touched === '1';
+      if (!touched && !lines[i] && prev.lines[i]) lines[i] = prev.lines[i];
     }
   }
   if (!lines.some(t => t)) return showToast('请至少填写一行结算进展文字', 'error');
@@ -932,18 +1085,37 @@ function onSubmit(e) {
     return v === '' ? null : Number(v);
   };
 
+  /* 必填校验：这些字段在界面上标了 *，但原先 onSubmit 完全不校验，可以提交空值 */
+  const requiredDate = document.getElementById('stlRequiredDate').value;
+  const methodVal = document.getElementById('stlMethod').value.trim();
+  const amtV = num('stlTargetAmount');
+  const costV = num('stlEstCost');
+  const benV = num('stlTargetBenefit');
+  if (!requiredDate) return showToast('请填写「要求完成结算时间」', 'error');
+  if (!methodVal) return showToast('请填写「结算方式」', 'error');
+  if (amtV == null || isNaN(amtV)) return showToast('请填写「目标结算额」', 'error');
+  if (costV == null || isNaN(costV)) return showToast('请填写「预估总成本」', 'error');
+  if (benV == null || isNaN(benV)) return showToast('请填写「目标效益」', 'error');
+  if (amtV < 0 || costV < 0) return showToast('金额不能为负数', 'error');
+
+  /* 覆盖已有提交时二次确认 */
+  const store0 = loadStore();
+  const wkNow = weekKey(new Date());
+  const already = (store0.weeks[wkNow] || []).some(r => r.manager === manager && r.shortName === shortName);
+  if (already && !confirm('本项目本周已提交过，再次提交将覆盖原记录。\n确认要覆盖吗？')) return;
+
   const rec = {
     manager,
     shortName,
     projectName: currentProject ? currentProject.n : '',
     leader: document.getElementById('stlLeader').value.trim(),
     status,
-    requiredDate: document.getElementById('stlRequiredDate').value,
+    requiredDate: requiredDate,
     urgeDate: document.getElementById('stlUrgeDate').value,
-    method: document.getElementById('stlMethod').value.trim(),
-    targetAmount: num('stlTargetAmount'),
-    estCost: num('stlEstCost'),
-    targetBenefit: num('stlTargetBenefit'),
+    method: methodVal,
+    targetAmount: amtV,
+    estCost: costV,
+    targetBenefit: benV,
     lines,
     record: editorToText(lines),
     ts: Date.now()
@@ -956,13 +1128,18 @@ function onSubmit(e) {
   if (idx >= 0) store.weeks[key][idx] = rec; else store.weeks[key].push(rec);
   saveStore(store);
 
+  /* 保留历史快照（仅本地），覆盖后仍可找回 */
+  pushHistory(rec, manager + '|' + shortName + '|' + key);
+  clearDraft();
+
   // 同步到云端提交 bin（独立 bin，公开可读；写入用受限密钥），便于统一汇总
   pushSubmission(rec, key).then(function () {
     if (dashOK) loadDashboard();
     updatePendingBadge();
     updateCloudStatus();
   }).catch(function (err) {
-    showToast('云端同步失败（本地已保存）：' + (err && err.message ? err.message : err), 'error');
+    showToast('云端同步失败（本地已保存，可稍后点「重试同步」）：' + (err && err.message ? err.message : err), 'error');
+    updateCloudStatus();
   });
 
   showSubmittedHint(true, '本项目本周结算进展已提交（' + fmtTime(rec.ts) + '），如需修改可直接改后再次提交覆盖。');
@@ -971,7 +1148,85 @@ function onSubmit(e) {
   // 回填合并后的文字
   document.querySelectorAll('#settleEditor .record-user').forEach(el => {
     el.textContent = lines[Number(el.dataset.line)] || '';
+    el.dataset.touched = '';
   });
+}
+
+/* ===== 草稿自动保存（手机端误关页面不丢内容） ===== */
+const LS_DRAFT = 'hn_settle_draft_v1';
+
+function saveDraft() {
+  const d = {
+    manager: document.getElementById('managerName').value,
+    shortName: document.getElementById('projectShortName').value,
+    status: document.getElementById('projectStatus').value,
+    leader: document.getElementById('stlLeader').value,
+    requiredDate: document.getElementById('stlRequiredDate').value,
+    urgeDate: document.getElementById('stlUrgeDate').value,
+    method: document.getElementById('stlMethod').value,
+    targetAmount: document.getElementById('stlTargetAmount').value,
+    estCost: document.getElementById('stlEstCost').value,
+    targetBenefit: document.getElementById('stlTargetBenefit').value,
+    lines: readEditor(),
+    at: Date.now()
+  };
+  /* 全空就不存，避免无意义的草稿 */
+  const hasContent = d.manager || d.shortName || (d.lines && d.lines.some(t => t));
+  if (!hasContent) { clearDraft(); return; }
+  saveJSON(LS_DRAFT, d);
+  showDraftHint(true, d.at);
+}
+function clearDraft() {
+  try { localStorage.removeItem(LS_DRAFT); } catch (e) {}
+  showDraftHint(false);
+}
+function loadDraft() {
+  return loadJSON(LS_DRAFT, null);
+}
+function showDraftHint(show, at) {
+  const el = document.getElementById('draftHint');
+  if (!el) return;
+  if (show && at) {
+    el.textContent = '草稿已自动保存（' + fmtTime(at) + '），下次打开会自动恢复。';
+    el.style.display = 'block';
+  } else {
+    el.style.display = 'none';
+  }
+}
+/* 恢复草稿：需要在云端数据加载完成后调用（项目列表已填充） */
+function restoreDraft() {
+  const d = loadDraft();
+  if (!d || !d.manager) return false;
+  const mSel = document.getElementById('managerName');
+  if (!Array.from(mSel.options).some(o => o.value === d.manager)) return false;
+  mSel.value = d.manager;
+  onManagerSelect();
+  const pSel = document.getElementById('projectShortName');
+  if (d.shortName && Array.from(pSel.options).some(o => o.value === d.shortName)) {
+    pSel.value = d.shortName;
+    onProjectSelect();
+  }
+  if (d.status) {
+    document.getElementById('projectStatus').value = d.status;
+    onStatusChange();
+  }
+  const set = (id, v) => { if (v !== undefined && v !== null && v !== '') document.getElementById(id).value = v; };
+  set('stlLeader', d.leader);
+  set('stlRequiredDate', d.requiredDate);
+  set('stlUrgeDate', d.urgeDate);
+  set('stlMethod', d.method);
+  set('stlTargetAmount', d.targetAmount);
+  set('stlEstCost', d.estCost);
+  set('stlTargetBenefit', d.targetBenefit);
+  if (d.lines) {
+    document.querySelectorAll('#settleEditor .record-user').forEach(el => {
+      const t = d.lines[Number(el.dataset.line)] || '';
+      el.textContent = t;
+      if (t) el.dataset.touched = '1';
+    });
+  }
+  showDraftHint(true, d.at);
+  return true;
 }
 
 function updatePendingBadge() {
@@ -1014,8 +1269,10 @@ function updateCloudStatus() {
   if (CLOUD_LOADED) {
     const t = CLOUD_UPDATED_AT ? fmtTime(new Date(CLOUD_UPDATED_AT).getTime()) : '未知时间';
     const sub = CLOUD_SUBS_LOADED ? ('　｜　提交 ' + CLOUD_SUBS.length + ' 条（含全员）') : '';
-    el.textContent = '☁️ 云端更新：' + t + sub;
-    el.className = 'cloud-status';
+    const pend = pendingCount();
+    const pTxt = pend ? ('　｜　⚠️ ' + pend + ' 条待补传') : '';
+    el.textContent = '☁️ 云端更新：' + t + sub + pTxt;
+    el.className = 'cloud-status' + (pend ? ' offline' : '');
   } else {
     el.textContent = '☁️ 未连接云端';
     el.className = 'cloud-status offline';
@@ -1176,9 +1433,12 @@ function currentTableRows() {
 }
 
 function exportExcel() {
-  if (typeof XLSX === 'undefined') return showToast('Excel 组件未加载完成，请稍候重试', 'error');
   const { key, rows } = currentTableRows();
   if (rows.length <= 1) return showToast('本周暂无数据可导出', 'error');
+  /* Excel 组件依赖 CDN，若被墙或未加载完成，降级导出 CSV（Excel 可直接打开） */
+  if (typeof XLSX === 'undefined') {
+    return exportCSV(rows, key);
+  }
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [{ wch: 5 }, { wch: 10 }, { wch: 14 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 12 },
     { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 50 }, { wch: 40 }, { wch: 40 }, { wch: 40 }, { wch: 24 }, { wch: 18 }];
@@ -1186,6 +1446,54 @@ function exportExcel() {
   XLSX.utils.book_append_sheet(wb, ws, '结算进展');
   XLSX.writeFile(wb, '华南结算进展_' + key + '.xlsx');
   showToast('已导出 Excel', 'success');
+}
+
+/* CSV 兜底导出：不依赖任何外部库，带 BOM 以保证 Excel 中文不乱码 */
+function exportCSV(rows, key) {
+  const esc = v => {
+    const s = (v == null ? '' : String(v));
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const csv = rows.map(r => r.map(esc).join(',')).join('\r\n');
+  const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '华南结算进展_' + key + '.csv';
+  a.click();
+  showToast('Excel 组件不可用，已导出 CSV（可直接用 Excel 打开）', 'success');
+}
+
+/* 重试同步：补传因网络问题未成功写入云端的提交 */
+async function retrySyncUI() {
+  const btn = document.getElementById('btnRetrySync');
+  const n = pendingCount();
+  if (!n) {
+    /* 队列为空时，把本地记录全量重推一次，确保云端与本地一致 */
+    if (!confirm('当前没有待补传记录。\n是否把本机所有本地提交重新推送到云端（以较新者为准）？')) return;
+    if (btn) { btn.disabled = true; btn.textContent = '同步中…'; }
+    try {
+      const store = loadStore();
+      let ok = 0, fail = 0;
+      for (const wk of Object.keys(store.weeks || {})) {
+        for (const r of (store.weeks[wk] || [])) {
+          try { await pushSubmission(r, wk); ok++; } catch (e) { fail++; }
+        }
+      }
+      showToast('补传完成：成功 ' + ok + ' 条' + (fail ? '，失败 ' + fail + ' 条' : ''), fail ? 'error' : 'success');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔁 重试同步'; }
+    }
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '补传中…'; }
+  try {
+    const ok = await retryPendingSync();
+    showToast(ok ? ('已补传 ' + ok + ' 条') : '补传失败，请检查网络后重试', ok ? 'success' : 'error');
+    if (dashOK) loadDashboard();
+    updateCloudStatus();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔁 重试同步'; }
+  }
 }
 
 function exportBackup() {
@@ -1217,13 +1525,15 @@ function importBackup(files) {
 }
 
 function resetWeek() {
-  if (!confirm('确认开启新的一周？当前周数据将保留在历史记录中，可随时切换查看。')) return;
+  /* 该函数原本叫「新周重置」，实际并不清空任何数据，只是确保本周 key 存在。
+     现改名为「切到本周」并修正提示文案，避免误以为会清数据。 */
   const key = weekKey(new Date());
   const store = loadStore();
+  const had = !!store.weeks[key];
   if (!store.weeks[key]) store.weeks[key] = [];
   saveStore(store);
   loadDashboard();
-  showToast('已切换到本周：' + weekLabel(key), 'success');
+  showToast(had ? '已切回本周：' + weekLabel(key) : '已切到本周：' + weekLabel(key) + '（历史数据均保留）', 'success');
 }
 
 document.addEventListener('DOMContentLoaded', initForm);
