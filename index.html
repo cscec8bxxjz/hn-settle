@@ -690,15 +690,31 @@ async function loadSubmissions() {
   if (CLOUD_SUBS_LOADING) return CLOUD_SUBS;
   CLOUD_SUBS_LOADING = true;
   try {
-    /* 走代理时读 Worker，否则直连 jsonbin */
-    const url = WORKER.url
-      ? (WORKER.url.replace(/\/$/, '') + '/sub?t=' + Date.now())
-      : (CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '?t=' + Date.now());
-    const r = await fetchWithTimeout(url, { cache: 'no-store' }, 15000);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const j = await r.json();
-    const rec = (WORKER.url ? j : (j.record || {}));
-    const arr = Array.isArray(rec.submissions) ? rec.submissions : [];
+    /* 读取「直连 jsonbin」优先：该提交 bin 公开可读(private:false)，无需密钥、
+       不经过 workers.dev，因此看板数据不受代理可达性/密钥问题影响。
+       Worker 只作兜底（万一 jsonbin 直连被挡）。写入仍只走 Worker（需密钥）。 */
+    const sources = [
+      CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '?t=' + Date.now(),
+      WORKER.url ? (WORKER.url.replace(/\/$/, '') + '/sub?t=' + Date.now()) : null
+    ];
+    let arr = null, lastErr = null;
+    for (let i = 0; i < sources.length; i++) {
+      const url = sources[i];
+      if (!url) continue;
+      try {
+        const r = await fetchWithTimeout(url, { cache: 'no-store' }, 15000);
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        /* 直连 jsonbin 返回 {record:{submissions:[...]}}；Worker 返回 {submissions:[...]} */
+        const rec = (j && j.record) ? j.record : j;
+        arr = (rec && Array.isArray(rec.submissions)) ? rec.submissions : [];
+        break;
+      } catch (e) {
+        lastErr = e;
+        console.warn('loadSubmissions 源失败(' + (i === 0 ? 'jsonbin直连' : 'Worker') + ')', e);
+      }
+    }
+    if (arr === null) throw (lastErr || new Error('读取失败'));
     /* 保护：若上次已知有提交而这次读到空，判定为读取异常，不覆盖内存副本 */
     if (arr.length === 0 && CLOUD_SUBS.length > 0) {
       throw new Error('云端返回空数据，疑似读取异常，保留本地副本');
@@ -1002,18 +1018,24 @@ async function initForm() {
     if (empty) empty.textContent = '名单加载中（内置快照）…';
   }
 
-  /* ② 后台异步刷新云端：下拉框已可用，这两个请求在后台跑，不再阻塞交互 */
+  /* ② 后台异步刷新云端：两个请求各自独立，互不阻塞、也互不牵连
+       （主清单失败不再导致提交数据读不到，看板因此更稳） */
   loadCloudData()
     .then(function () {
       populateManagerSelect();      // 用真实云端名单覆盖快照，保留已选姓名
       updatePendingBadge();
-      return loadSubmissions();     // 看板“已提交”统计依赖此数据
+      updateCloudStatus();
     })
-    .then(function () { updateCloudStatus(); })
     .catch(function (e) {
       showToast('云端名单加载失败，暂用本地缓存（可在看板点“刷新云端数据”重试）：' + (e && e.message ? e.message : e), 'error');
     });
-  /* loadSubmissions 已在上面链式中作为后台步骤；此处不再单独 await */
+
+  loadSubmissions()
+    .then(function () {
+      updateCloudStatus();
+      updatePendingBadge();
+      if (dashOK) loadDashboard();  // 若已进看板，数据到达后自动补渲染，无需手动刷新
+    });
 
   // 结算进展文字：只允许纯文本粘贴
   document.querySelectorAll('#settleEditor .record-user').forEach(el => {
@@ -1251,13 +1273,14 @@ function onSubmit(e) {
     if (dashOK) loadDashboard();
     updatePendingBadge();
     updateCloudStatus();
+    showToast('提交成功（已同步云端）', 'success');
   }).catch(function (err) {
     showToast('云端同步失败（本地已保存，可稍后点「重试同步」）：' + (err && err.message ? err.message : err), 'error');
     updateCloudStatus();
   });
 
   showSubmittedHint(true, '本项目本周结算进展已提交（' + fmtTime(rec.ts) + '），如需修改可直接改后再次提交覆盖。');
-  showToast('提交成功', 'success');
+  showToast('已保存，正在同步云端…', 'success');
   updatePendingBadge();
   // 回填合并后的文字
   document.querySelectorAll('#settleEditor .record-user').forEach(el => {
