@@ -659,16 +659,19 @@ const CLOUD_FALLBACK = {
 const CLOUD_SUB = {
   base: 'https://api.jsonbin.io/v3/b',
   binId: '6aa0a535ac6210605ab5ab3d',
-  secret: ''   // 代理模式已启用：主密钥只存于 Cloudflare Worker 环境变量，前端不再硬编码。若需回退直连，补回此密钥即可。
+  /* 直连写入模式：前端用该提交 bin 的密钥直接写 jsonbin。
+     背景：Cloudflare 的 workers.dev 域名在国内被墙（DNS 污染），走代理写不进去，故改为直连。
+     安全提示：此密钥会出现在网页源码中，拿到链接的人理论上可覆盖/清空提交数据；
+     若日后给 Worker 绑定了自有域名（国内可直连），可把密钥移回 Worker 并清空此处。 */
+  secret: '$2a$10$tmD8U0ZFn0CW7O7zjoXQuOpjZoi1RsjhOsWbp0sIYftyr/wVqJNEW'
 };
 
-/* 写入代理（Cloudflare Worker）。
-   填了 url 就走代理：密钥只存在 Worker 的环境变量里，前端不再接触密钥。
-   留空则回退为直连 jsonbin（兼容未部署代理的情况）。
-   部署好 Worker 后，把地址填到这里即可，例如：
-     url: 'https://settlement-proxy.xxx.workers.dev'   */
+/* 写入代理（Cloudflare Worker）—— 当前「已停用」（url 留空）。
+   停用原因：workers.dev 域名国内被墙，写入已改为直连 jsonbin（见上方 CLOUD_SUB.secret）。
+   日后若给 Worker 绑定自有域名（国内可直连），把该域名填回下方 url 即重新启用代理模式，
+   届时可把 CLOUD_SUB.secret 清空，把密钥放回 Worker 的环境变量。 */
 const WORKER = {
-  url: 'https://hn-settle-proxy.cscec8bxxjz.workers.dev'
+  url: ''
 };
 
 let CLOUD_SUBS = [];
@@ -690,28 +693,39 @@ async function loadSubmissions() {
   if (CLOUD_SUBS_LOADING) return CLOUD_SUBS;
   CLOUD_SUBS_LOADING = true;
   try {
-    /* 读取「直连 jsonbin」优先：该提交 bin 公开可读(private:false)，无需密钥、
-       不经过 workers.dev，因此看板数据不受代理可达性/密钥问题影响。
-       Worker 只作兜底（万一 jsonbin 直连被挡）。写入仍只走 Worker（需密钥）。 */
-    const sources = [
-      CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '?t=' + Date.now(),
-      WORKER.url ? (WORKER.url.replace(/\/$/, '') + '/sub?t=' + Date.now()) : null
-    ];
+    /* 读取「直连 jsonbin」，优先级：
+       1) 带密钥的 /latest —— 返回最新版本，避免「公开读」的秒级滞后（写完后立刻能看到）
+       2) 公开 GET —— 无需密钥的兜底（该 bin public:false，公开可读）
+       （Worker 已停用，url 为空时自动跳过；日后启用可再加回）
+       全程不经过 workers.dev。写入为前端直连 jsonbin 的 read-modify-write。 */
+    const sources = [];
+    if (CLOUD_SUB.secret) {
+      sources.push({
+        tag: 'jsonbin/latest(密钥)',
+        url: CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '/latest?t=' + Date.now(),
+        headers: { 'X-Master-Key': CLOUD_SUB.secret }
+      });
+    }
+    sources.push({ tag: 'jsonbin公开读', url: CLOUD_SUB.base + '/' + CLOUD_SUB.binId + '?t=' + Date.now(), headers: null });
+    if (WORKER.url) {
+      sources.push({ tag: 'Worker', url: WORKER.url.replace(/\/$/, '') + '/sub?t=' + Date.now(), headers: null });
+    }
     let arr = null, lastErr = null;
     for (let i = 0; i < sources.length; i++) {
-      const url = sources[i];
-      if (!url) continue;
+      const s = sources[i];
       try {
-        const r = await fetchWithTimeout(url, { cache: 'no-store' }, 15000);
+        const opt = { cache: 'no-store' };
+        if (s.headers) opt.headers = s.headers;
+        const r = await fetchWithTimeout(s.url, opt, 15000);
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
-        /* 直连 jsonbin 返回 {record:{submissions:[...]}}；Worker 返回 {submissions:[...]} */
+        /* jsonbin 返回 {record:{submissions:[...]}}；Worker 返回 {submissions:[...]} */
         const rec = (j && j.record) ? j.record : j;
         arr = (rec && Array.isArray(rec.submissions)) ? rec.submissions : [];
         break;
       } catch (e) {
         lastErr = e;
-        console.warn('loadSubmissions 源失败(' + (i === 0 ? 'jsonbin直连' : 'Worker') + ')', e);
+        console.warn('loadSubmissions 源失败(' + sources[i].tag + ')', e);
       }
     }
     if (arr === null) throw (lastErr || new Error('读取失败'));
