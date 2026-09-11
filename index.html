@@ -586,11 +586,74 @@ async function loadCloudData() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     applyCloudData(j.record || {});
+    saveCloudCache(j.record || {});
     return j.record;
   } finally {
     CLOUD_LOADING = false;
   }
 }
+
+/* ============ 本地缓存 + 内置快照：页面打开即生效，免去云端加载等待 ============
+   1) localStorage 缓存：每次成功拉取云端后写入，回头客打开即用「上次成功的数据」，零等待。
+   2) 内置静态快照：仅用于首次访问 / 清缓存的用户兜底，确保下拉框立刻有内容，随后由云端刷新覆盖。 */
+const CLOUD_CACHE_KEY = 'hnSettleCloudCache_v1';
+function saveCloudCache(rec) {
+  try {
+    if (!rec) return;
+    localStorage.setItem(CLOUD_CACHE_KEY, JSON.stringify({
+      managers: rec.managers || [],
+      projects: rec.projects || [],
+      settle: rec.settle || {},
+      updatedAt: rec.updatedAt || ''
+    }));
+  } catch (e) { /* 隐私模式等写入失败，忽略即可 */ }
+}
+function loadCloudCache() {
+  try {
+    const s = localStorage.getItem(CLOUD_CACHE_KEY);
+    if (!s) return null;
+    const o = JSON.parse(s);
+    if (!o || !Array.isArray(o.managers) || !o.managers.length) return null;
+    return o;
+  } catch (e) { return null; }
+}
+
+/* 内置快照（2026-09-10 同步）。首次访问无缓存时兜底；如名单有变，重跑 sync_cloud.py 后此处一并刷新。 */
+const CLOUD_FALLBACK = {
+  managers: ["窦智","王绪","李捷","宾建军","刘永志","唐斯新","韦王睿","赵启超","左炫","于灏","王奠卿","张政","沈耀伟","王金平","马棚","刘锶瀚","江国兵","黎邦奇","江章飞","任浩旭","张友满"],
+  projects: [
+    {"s":"茂名桥一期（东环）","n":"茂名(东环大道)","m":"窦智","leader":"区毅敏"},
+    {"s":"茂名桥二期（快速）","n":"省道S280线(茂名大道)快速化改造","m":"窦智","leader":"区毅敏"},
+    {"s":"港中大","n":"港中大主体III标项目-钢结构分包工程","m":"王绪","leader":"王奠卿"},
+    {"s":"南城商贸","n":"南城商贸","m":"王绪","leader":"李善文"},
+    {"s":"光明马术","n":"深圳光明马术","m":"李捷","leader":"董林"},
+    {"s":"丰城九岭","n":"丰城九岭","m":"宾建军","leader":"宋宝旭"},
+    {"s":"园创樵山项目","n":"园创樵山项目","m":"刘永志","leader":"邱小文"},
+    {"s":"龙阳路","n":"龙阳路项目","m":"唐斯新","leader":"宋宝旭"},
+    {"s":"南宁机场","n":"南宁吴圩机场","m":"韦王睿","leader":"董林"},
+    {"s":"儋州厂房","n":"年处理66万吨锆钛矿精选项目","m":"赵启超","leader":"宋宝旭"},
+    {"s":"广商中心","n":"广商中心项目施工总承包工程","m":"左炫","leader":"董林"},
+    {"s":"汕头医院","n":"汕头市中心医院易地重建项目","m":"李捷","leader":"宋宝旭"},
+    {"s":"深国交","n":"深圳国际交流中心（一期）B303-0064地块施工总承包钢结构工程","m":"于灏","leader":"董林"},
+    {"s":"人行天桥","n":"创业路科苑南路人行天桥项目（深圳）","m":"于灏","leader":"宋宝旭"},
+    {"s":"柳州轻轨","n":"柳州市公共交通配套工程","m":"宾建军","leader":"宋宝旭"},
+    {"s":"知识塔","n":"中新广州知识城JLXC-F1-1地块知识塔项目","m":"王奠卿","leader":"王奠卿"},
+    {"s":"九州港钢结构","n":"九州港客运站钢结构项目","m":"张政","leader":"董林"},
+    {"s":"九州港铝结构","n":"九洲港客运站场铝结构工程","m":"张政","leader":"董林"},
+    {"s":"深职大","n":"深圳职业技术大学深汕校区项目施工总承包IV标-钢结构专业分包工程","m":"沈耀伟","leader":"王奠卿"},
+    {"s":"中新科技馆","n":"中新科技文化艺术中心（城市科技馆）建设项目勘察设计施工总承包钢结构工程","m":"王金平","leader":"宋宝旭"},
+    {"s":"海南科技馆","n":"海南科技馆建筑工程项目","m":"马棚","leader":"董林"},
+    {"s":"临高机场","n":"海南临高机场项目","m":"刘锶瀚","leader":"宋宝旭"},
+    {"s":"红花岭","n":"深圳南山智造红花岭产业园一期钢结构专业分包项目","m":"江国兵","leader":"宋宝旭"},
+    {"s":"一丹","n":"一丹中心项目总承包工程钢结构工程","m":"黎邦奇","leader":"王奠卿"},
+    {"s":"梧州厂房","n":"梧州市高新区光伏产业园建设项目工程总承包工程钢结构专业分包工程","m":"江章飞","leader":"李松"},
+    {"s":"厦门新机场临建","n":"厦门新机场项目—机场工程—航站区工程一标段总承包工程临建项目","m":"任浩旭","leader":"邱小文"},
+    {"s":"厦门新机场","n":"厦门新机场项目机场工程航站区工程一标段项目","m":"任浩旭","leader":"邱小文"},
+    {"s":"生态智谷","n":"深圳建筑产业生态智谷总部基地施工总承包钢结构工程","m":"张友满","leader":"李松"},
+    {"s":"腾讯韶关","n":"腾讯韶关浈江算力中心项目施工总承包工程钢结构工程","m":"宾建军","leader":"王奠卿"}
+  ],
+  updatedAt: "2026-09-10T10:00:52.000Z"
+};
 
 /* ==================== 提交数据云端层（方案 B：表单提交写云端，可统一汇总） ==================== */
 const CLOUD_SUB = {
@@ -924,15 +987,33 @@ let currentProject = null;
 
 async function initForm() {
   const mgrSel = document.getElementById('managerName');
-  mgrSel.innerHTML = '<option value="">云端名单加载中…</option>';
-  try {
-    await loadCloudData();
-    await loadSubmissions();
-  } catch (e) {
-    showToast('云端名单加载失败，暂用空名单（可在看板点“刷新云端数据”重试）：' + (e && e.message ? e.message : e), 'error');
-  }
+
+  /* ① 立刻用「本地缓存 / 内置快照」填充下拉框，零等待（不再显示“云端名单加载中”） */
+  const boot = loadCloudCache() || CLOUD_FALLBACK;
+  applyCloudData(boot);
   populateManagerSelect();
   document.getElementById('statTotal').textContent = REPORT_MANAGERS.length;
+  restoreDraft();              // 名单已就位，草稿立即恢复
+  updatePendingBadge();
+  updateCloudStatus();
+  if (!loadCloudCache()) {
+    /* 真·首访（无缓存）才用快照，并提示正在后台拉取最新名单 */
+    const empty = mgrSel.querySelector('option[value=""]');
+    if (empty) empty.textContent = '名单加载中（内置快照）…';
+  }
+
+  /* ② 后台异步刷新云端：下拉框已可用，这两个请求在后台跑，不再阻塞交互 */
+  loadCloudData()
+    .then(function () {
+      populateManagerSelect();      // 用真实云端名单覆盖快照，保留已选姓名
+      updatePendingBadge();
+      return loadSubmissions();     // 看板“已提交”统计依赖此数据
+    })
+    .then(function () { updateCloudStatus(); })
+    .catch(function (e) {
+      showToast('云端名单加载失败，暂用本地缓存（可在看板点“刷新云端数据”重试）：' + (e && e.message ? e.message : e), 'error');
+    });
+  /* loadSubmissions 已在上面链式中作为后台步骤；此处不再单独 await */
 
   // 结算进展文字：只允许纯文本粘贴
   document.querySelectorAll('#settleEditor .record-user').forEach(el => {
@@ -959,22 +1040,20 @@ async function initForm() {
     });
 
   document.getElementById('collectForm').addEventListener('submit', onSubmit);
-  updatePendingBadge();
-  updateCloudStatus();
   scheduleCloudAutoRefresh();
-
-  /* 云端名单就绪后恢复上次未提交的草稿 */
-  restoreDraft();
 }
 
 function populateManagerSelect() {
   const mgrSel = document.getElementById('managerName');
+  const prev = mgrSel ? mgrSel.value : '';
   mgrSel.innerHTML = '<option value="">请选择你的姓名</option>';
   REPORT_MANAGERS.forEach(m => {
     const o = document.createElement('option');
     o.value = m; o.textContent = m;
     mgrSel.appendChild(o);
   });
+  /* 云端刷新后重建下拉时，尽量保留用户已选的姓名，避免误清空 */
+  if (prev && Array.from(mgrSel.options).some(o => o.value === prev)) mgrSel.value = prev;
 }
 
 function onManagerSelect() {
