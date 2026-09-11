@@ -360,6 +360,7 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
     <div class="hero" data-page-node-id="8AZH4vnIP6LCcXR2KrTheX"><h2 data-page-node-id="fG36hQ7szLF0R6mMq6FzdH">华南结算进展收集</h2></div>
     <div class="card" data-page-node-id="GtEbbfbLkXpJZdPDOLQR5I">
       <div class="card-header" data-page-node-id="YlltBVlJ2IA9MDc7w6rOps">🧾 结算进展填写</div>
+      <div class="helper" id="formWeekHint" style="margin:0 0 10px;">📅 本次提交归属周：<b id="formWeekLabel">—</b>（管理员「开启下一周」后自动切换）</div>
       <div id="submittedHint" class="hint-ok" style="display:none;" data-page-node-id="2OIo96mtaANOaSWdUGA4k3">
         ✅ <span id="submittedTime" data-page-node-id="t2xd1udBsbuHBjpfV38RnG"></span>
       </div>
@@ -483,7 +484,8 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
           <option value="" data-page-node-id="NC4d05TEmJBGzMpQAlEXxC">加载中...</option>
         </select>
         <button class="btn btn-sm btn-success" onclick="exportExcel()" data-page-node-id="k5aLHkVZUBM3yMIAr4UIM7">📥 导出Excel</button>
-        <button class="btn btn-sm btn-outline" onclick="resetWeek()" data-page-node-id="q3RMZTxNC1BCYld5pBOssq" title="仅确保本周记录存在，不会清空任何数据">📅 切到本周</button>
+        <button class="btn btn-sm btn-success" id="btnNextWeek" onclick="openNextWeek()" title="结束本周收集、进入下一周（历史数据全部保留，不清空任何内容）">➡️ 开启下一周</button>
+        <button class="btn btn-sm btn-outline" onclick="resetWeek()" data-page-node-id="q3RMZTxNC1BCYld5pBOssq" title="把看板切换到当前收集周（不清空任何数据）">📅 切到当前周</button>
         <button class="btn btn-sm btn-outline" onclick="exportBackup()" data-page-node-id="8SiBOcruqVISsYEUn94ndM">💾 导出备份</button>
         <button class="btn btn-sm btn-outline" onclick="document.getElementById('importFile').click()" data-page-node-id="cGRuOpdcXZ4RMoLUa2t7F4">📂 导入备份</button>
         <button class="btn btn-sm btn-outline" id="btnRetrySync" onclick="retrySyncUI()" title="补传上次因网络问题未同步成功的提交">🔁 重试同步</button>
@@ -710,7 +712,7 @@ async function loadSubmissions() {
     if (WORKER.url) {
       sources.push({ tag: 'Worker', url: WORKER.url.replace(/\/$/, '') + '/sub?t=' + Date.now(), headers: null });
     }
-    let arr = null, lastErr = null;
+    let arr = null, aw = null, lastErr = null;
     for (let i = 0; i < sources.length; i++) {
       const s = sources[i];
       try {
@@ -722,6 +724,7 @@ async function loadSubmissions() {
         /* jsonbin 返回 {record:{submissions:[...]}}；Worker 返回 {submissions:[...]} */
         const rec = (j && j.record) ? j.record : j;
         arr = (rec && Array.isArray(rec.submissions)) ? rec.submissions : [];
+        aw = (rec && typeof rec.activeWeek === 'string') ? rec.activeWeek : '';
         break;
       } catch (e) {
         lastErr = e;
@@ -735,6 +738,8 @@ async function loadSubmissions() {
     }
     CLOUD_SUBS = arr;
     CLOUD_SUBS_LOADED = true;
+    /* 同步云端「收集周」（若云端未设置则保留本地判断） */
+    if (aw) setActiveWeek(aw);
   } catch (e) {
     console.warn('loadSubmissions failed', e);
   } finally {
@@ -752,7 +757,7 @@ async function loadSubmissions() {
 /* 读取云端「最新全量」。有密钥时用 /latest（即时、权威）；无密钥时才退公开 GET。
    ⚠️ 写入前的读取必须用最新版本：公开读有秒级滞后，若拿它做 read-modify-write，
       后提交者会用「不含前人新提交」的旧快照回写，从而覆盖丢失他人记录（已实测复现）。 */
-async function fetchCloudSubsLatest() {
+async function fetchCloudRecord() {
   const useKey = !!CLOUD_SUB.secret;
   const url = CLOUD_SUB.base + '/' + CLOUD_SUB.binId + (useKey ? '/latest' : '') + '?t=' + Date.now();
   const opt = { cache: 'no-store' };
@@ -761,7 +766,11 @@ async function fetchCloudSubsLatest() {
   if (!r.ok) throw new Error('读取失败 HTTP ' + r.status);
   const j = await r.json();
   const rec = (j && j.record) ? j.record : j;
-  return (rec && Array.isArray(rec.submissions)) ? rec.submissions : [];
+  return (rec && typeof rec === 'object') ? rec : {};
+}
+async function fetchCloudSubsLatest() {
+  const rec = await fetchCloudRecord();
+  return Array.isArray(rec.submissions) ? rec.submissions : [];
 }
 
 async function pushSubmission(rec, wk) {
@@ -799,7 +808,11 @@ async function pushSubmission(rec, wk) {
       /* 步骤 1：读取当前【最新】全量（带密钥 /latest，即时）。
          ⚠️ 绝不能用滞后的公开读，否则会覆盖丢失他人的新提交。
          读不到就绝不能写。 */
-      const arr = (await fetchCloudSubsLatest()).slice();
+      const rec0 = await fetchCloudRecord();
+      const arr = (Array.isArray(rec0.submissions) ? rec0.submissions : []).slice();
+      /* 保留云端「收集周」：仅由「开启下一周」按钮改动，普通提交原样写回，
+         避免提交者本地过期的周值把管理员刚推进的周覆盖回去 */
+      const awKeep = (typeof rec0.activeWeek === 'string' && rec0.activeWeek) ? rec0.activeWeek : activeWeek();
 
       /* 步骤 2：异常保护 —— 已知有提交却读到空，说明读取有问题，拒绝写入 */
       if (arr.length === 0 && CLOUD_SUBS.length > 0) {
@@ -814,7 +827,7 @@ async function pushSubmission(rec, wk) {
       const r = await fetchWithTimeout(CLOUD_SUB.base + '/' + CLOUD_SUB.binId, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', 'X-Master-Key': CLOUD_SUB.secret },
-        body: JSON.stringify({ submissions: arr })
+        body: JSON.stringify({ submissions: arr, activeWeek: awKeep })
       }, 20000);
       if (!r.ok) throw new Error('写入失败 HTTP ' + r.status);
 
@@ -955,8 +968,29 @@ function weekLabel(key, markCurrent) {
   const mon = new Date(y, m - 1, d);
   const sun = new Date(y, m - 1, d + 6);
   const f = x => (x.getMonth() + 1) + '/' + x.getDate();
-  const isCur = key === weekKey(new Date());
-  return y + '年 ' + f(mon) + ' — ' + f(sun) + (markCurrent !== false && isCur ? '（本周）' : '');
+  const isCur = key === activeWeek();
+  return y + '年 ' + f(mon) + ' — ' + f(sun) + (markCurrent !== false && isCur ? '（当前周）' : '');
+}
+
+/* ===== 收集周（可手动推进，云端共享；每周数据因此互相独立、互不影响） =====
+   默认跟随日历周；管理员可在看板点「开启下一周」把收集周推进一周。
+   提交记录以 wk=收集周 归档，所以不同周的数据天然分开保存。 */
+let ACTIVE_WEEK = '';
+const LS_ACTIVE_WEEK = 'hn_settle_active_week_v1';
+function calendarWeek() { return weekKey(new Date()); }
+function loadActiveWeekCache() { try { return localStorage.getItem(LS_ACTIVE_WEEK) || ''; } catch (e) { return ''; } }
+function setActiveWeek(wk) {
+  ACTIVE_WEEK = wk || '';
+  try { if (ACTIVE_WEEK) localStorage.setItem(LS_ACTIVE_WEEK, ACTIVE_WEEK); } catch (e) {}
+}
+/* 当前收集周：云端值 → 本地缓存 → 日历周 */
+function activeWeek() { return ACTIVE_WEEK || loadActiveWeekCache() || calendarWeek(); }
+/* 给定周键的下一个周（+7 天） */
+function nextWeekOf(wk) {
+  const p = String(wk || '').split('-').map(Number);
+  const d = new Date(p[0] || 1970, (p[1] || 1) - 1, p[2] || 1);
+  d.setDate(d.getDate() + 7);
+  return weekKey(d);
 }
 function fmtDate(s) {
   if (!s) return '';
@@ -1016,7 +1050,7 @@ function mergedWeeks() {
 }
 function currentWeekRecords() {
   const weeks = mergedWeeks();
-  return (weeks[weekKey(new Date())] || []);
+  return (weeks[activeWeek()] || []);
 }
 /* 同一项目经理+项目，历史上最近一条记录 */
 function lastRecordOf(manager, shortName) {
@@ -1047,6 +1081,7 @@ async function initForm() {
   restoreDraft();              // 名单已就位，草稿立即恢复
   updatePendingBadge();
   updateCloudStatus();
+  updateFormWeekHint();
   if (!loadCloudCache()) {
     /* 真·首访（无缓存）才用快照，并提示正在后台拉取最新名单 */
     const empty = mgrSel.querySelector('option[value=""]');
@@ -1069,6 +1104,7 @@ async function initForm() {
     .then(function () {
       updateCloudStatus();
       updatePendingBadge();
+      updateFormWeekHint();         // 同步云端「收集周」后刷新提示
       if (dashOK) loadDashboard();  // 若已进看板，数据到达后自动补渲染，无需手动刷新
     });
 
@@ -1271,7 +1307,7 @@ function onSubmit(e) {
 
   /* 覆盖已有提交时二次确认 */
   const store0 = loadStore();
-  const wkNow = weekKey(new Date());
+  const wkNow = activeWeek();
   const already = (store0.weeks[wkNow] || []).some(r => r.manager === manager && r.shortName === shortName);
   if (already && !confirm('本项目本周已提交过，再次提交将覆盖原记录。\n确认要覆盖吗？')) return;
 
@@ -1293,7 +1329,7 @@ function onSubmit(e) {
   };
 
   const store = loadStore();
-  const key = weekKey(new Date());
+  const key = activeWeek();
   if (!store.weeks[key]) store.weeks[key] = [];
   const idx = store.weeks[key].findIndex(r => r.manager === manager && r.shortName === shortName);
   if (idx >= 0) store.weeks[key][idx] = rec; else store.weeks[key].push(rec);
@@ -1410,6 +1446,12 @@ function updatePendingBadge() {
   b.style.display = pending > 0 ? 'inline-block' : 'none';
 }
 
+/* 表单顶部显示「本次提交归属周」，让提交人清楚当前收集周 */
+function updateFormWeekHint() {
+  const el = document.getElementById('formWeekLabel');
+  if (el) el.textContent = weekLabel(activeWeek(), false);
+}
+
 /* ========== 云端刷新 ========== */
 let _refreshingCloud = false;
 async function refreshCloud() {
@@ -1425,6 +1467,7 @@ async function refreshCloud() {
     loadDashboard();
     updatePendingBadge();
     updateCloudStatus();
+    updateFormWeekHint();
     const t = CLOUD_UPDATED_AT ? '（云端更新于 ' + fmtTime(new Date(CLOUD_UPDATED_AT).getTime()) + '）' : '';
     showToast('云端数据已刷新' + t, 'success');
   } catch (e) {
@@ -1466,6 +1509,7 @@ function scheduleCloudAutoRefresh() {
       loadDashboard();
       updatePendingBadge();
       updateCloudStatus();
+      updateFormWeekHint();
     } catch (e) { /* 静默失败，下次再试 */ }
     scheduleCloudAutoRefresh();
   }, next - now);
@@ -1500,7 +1544,7 @@ async function checkPwd() {
 function weekOptions() {
   const store = { weeks: mergedWeeks() };
   const keys = Object.keys(store.weeks || {}).sort().reverse();
-  const cur = weekKey(new Date());
+  const cur = activeWeek();
   if (!keys.includes(cur)) keys.unshift(cur);
   return keys;
 }
@@ -1518,7 +1562,7 @@ function loadDashboard() {
     o.textContent = weekLabel(k);
     sel.appendChild(o);
   });
-  sel.value = keys.includes(prev) ? prev : weekKey(new Date());
+  sel.value = keys.includes(prev) ? prev : activeWeek();
   const key = sel.value;
   const recs = (store.weeks[key] || []).slice().sort((a, b) => (a.manager > b.manager ? 1 : -1));
 
@@ -1589,7 +1633,7 @@ function esc(s) {
 
 /* ========== 导出 / 备份 ========== */
 function currentTableRows() {
-  const key = document.getElementById('weekSelector').value || weekKey(new Date());
+  const key = document.getElementById('weekSelector').value || activeWeek();
   const store = { weeks: mergedWeeks() };
   const recs = (store.weeks[key] || []).slice().sort((a, b) => (a.manager > b.manager ? 1 : -1));
   const rows = [['#', '项目经理', '项目简称', '项目名称', '包保领导', '项目状态', '要求完成结算时间', '催办结算时间', '结算方式',
@@ -1697,15 +1741,64 @@ function importBackup(files) {
 }
 
 function resetWeek() {
-  /* 该函数原本叫「新周重置」，实际并不清空任何数据，只是确保本周 key 存在。
-     现改名为「切到本周」并修正提示文案，避免误以为会清数据。 */
-  const key = weekKey(new Date());
+  /* 「切到当前周」：把看板切回当前的「收集周」，并确保该周 key 存在。
+     不会清空任何数据。 */
+  const key = activeWeek();
   const store = loadStore();
   const had = !!store.weeks[key];
   if (!store.weeks[key]) store.weeks[key] = [];
   saveStore(store);
+  const sel = document.getElementById('weekSelector');
+  if (sel) sel.value = key;
   loadDashboard();
-  showToast(had ? '已切回本周：' + weekLabel(key) : '已切到本周：' + weekLabel(key) + '（历史数据均保留）', 'success');
+  showToast((had ? '已切到当前收集周：' : '已切到当前收集周：') + weekLabel(key, false) + '（历史数据均保留）', 'success');
+}
+
+/* 把「收集周」写入云端（全体共享）：read-modify-write，完整保留所有提交。 */
+async function saveActiveWeekCloud(wk) {
+  const rec0 = await fetchCloudRecord();
+  const arr = Array.isArray(rec0.submissions) ? rec0.submissions : [];
+  const r = await fetchWithTimeout(CLOUD_SUB.base + '/' + CLOUD_SUB.binId, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-Master-Key': CLOUD_SUB.secret },
+    body: JSON.stringify({ submissions: arr, activeWeek: wk })
+  }, 20000);
+  if (!r.ok) throw new Error('写入失败 HTTP ' + r.status);
+  /* 回读确认（/latest 即时），确保真的生效 */
+  const back = await fetchCloudRecord();
+  if (back.activeWeek !== wk) throw new Error('云端未确认生效，请重试');
+  return back;
+}
+
+/* 「开启下一周」：仅把「收集周」推进一周，不动任何已提交数据。
+   推进后新提交归入新周；旧周数据全部保留，可在周选择器里回看。 */
+async function openNextWeek() {
+  if (!dashOK) return;
+  const cur = activeWeek();
+  const nxt = nextWeekOf(cur);
+  const msg = '确认开启下一周？\n\n' +
+    '当前收集周：' + weekLabel(cur, false) + '\n' +
+    '下一周为：' + weekLabel(nxt, false) + '\n\n' +
+    '开启后，所有人的新提交将归入「' + weekLabel(nxt, false) + '」。\n' +
+    '本周已有数据全部保留、不会丢失，可随时在上面切周查看。';
+  if (!confirm(msg)) return;
+  const btn = document.getElementById('btnNextWeek');
+  const old = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '开启中…'; }
+  try {
+    await saveActiveWeekCloud(nxt);
+    setActiveWeek(nxt);
+    const sel = document.getElementById('weekSelector');
+    if (sel) sel.value = nxt;
+    updateFormWeekHint();
+    updatePendingBadge();
+    loadDashboard();
+    showToast('已开启下一周：' + weekLabel(nxt, false) + '（历史数据已保留）', 'success');
+  } catch (e) {
+    showToast('开启下一周失败：' + (e && e.message ? e.message : e), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = old; }
+  }
 }
 
 document.addEventListener('DOMContentLoaded', initForm);
