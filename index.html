@@ -596,7 +596,7 @@ async function loadCloudData() {
 const CLOUD_SUB = {
   base: 'https://api.jsonbin.io/v3/b',
   binId: '6aa0a535ac6210605ab5ab3d',
-  secret: '$2a$10$tmD8U0ZFn0CW7O7zjoXQuOpjZoi1RsjhOsWbp0sIYftyr/wVqJNEW'
+  secret: ''   // 代理模式已启用：主密钥只存于 Cloudflare Worker 环境变量，前端不再硬编码。若需回退直连，补回此密钥即可。
 };
 
 /* 写入代理（Cloudflare Worker）。
@@ -605,7 +605,7 @@ const CLOUD_SUB = {
    部署好 Worker 后，把地址填到这里即可，例如：
      url: 'https://settlement-proxy.xxx.workers.dev'   */
 const WORKER = {
-  url: ''
+  url: 'https://hn-settle-proxy.cscec8bxxjz.workers.dev'
 };
 
 let CLOUD_SUBS = [];
