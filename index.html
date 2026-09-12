@@ -265,6 +265,17 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
   padding: 12px 16px; border-radius: 12px; margin-bottom: 18px; font-size: 13px;
 }
 
+/* === 本周汇总 === */
+.sum-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 14px; }
+.sum-item { background: var(--fill-2); border: .5px solid var(--sep); border-radius: 12px; padding: 14px 12px; text-align: center; }
+.sum-val { font-size: 22px; font-weight: 600; color: var(--label); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.sum-val.neg { color: var(--red); }
+.sum-lbl { font-size: 12px; color: var(--label-2); margin-top: 6px; }
+.status-dist { display: flex; flex-wrap: wrap; gap: 8px; }
+.status-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 980px; font-size: 13px; background: var(--fill); color: var(--label-2); }
+.status-chip b { color: var(--label); font-weight: 600; }
+.sum-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+
 /* === Empty state === */
 .empty { text-align: center; padding: 56px 20px; color: var(--label-3); }
 .empty .empty-icon { font-size: 44px; margin-bottom: 12px; }
@@ -304,6 +315,7 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
 /* === Responsive === */
 @media (max-width: 768px) {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
+  .sum-grid { grid-template-columns: repeat(2, 1fr); }
   .mgr-grid { grid-template-columns: 1fr; }
   .nav-inner { padding: 0 16px; gap: 10px; }
   .nav h1 { font-size: 15px; }
@@ -495,6 +507,21 @@ tr:hover td { background: rgba(120, 120, 128, .05); }
       <div class="cloud-bar"><span id="cloudStatus" class="cloud-status">☁️ 连接中…</span></div>
 
       <div id="weekAutoBanner" class="week-auto-banner" style="display:none;" data-page-node-id="gV59cboX2YKGyt0PVDzhv7"></div>
+
+      <div class="card" id="summaryCard" data-page-node-id="SumCard0001">
+        <div class="card-header" data-page-node-id="SumCard0002">📊 本周汇总</div>
+        <div class="sum-grid">
+          <div class="sum-item"><div class="sum-val" id="sumAmount">0.00</div><div class="sum-lbl">目标结算额合计（万）</div></div>
+          <div class="sum-item"><div class="sum-val" id="sumCost">0.00</div><div class="sum-lbl">预估总成本合计（万）</div></div>
+          <div class="sum-item"><div class="sum-val" id="sumBenefit">0.00</div><div class="sum-lbl">目标效益合计（万）</div></div>
+          <div class="sum-item"><div class="sum-val" id="sumRate">—</div><div class="sum-lbl">目标效益率（效益/结算额）</div></div>
+        </div>
+        <div class="status-dist" id="statusDist"></div>
+        <div class="sum-actions">
+          <button class="btn btn-sm btn-success" onclick="exportAllWeeks()" data-page-node-id="SumCard0003">📤 导出全部周</button>
+          <button class="btn btn-sm btn-outline" onclick="copyPendingList()" data-page-node-id="SumCard0004">📋 未提交名单</button>
+        </div>
+      </div>
 
       <div class="card" data-page-node-id="5P67YC1E6kyZBNh2R9PICM">
         <div class="card-header" data-page-node-id="3EAV0hXUlJDlYhFdYyTY5x">📋 项目经理提交状态</div>
@@ -773,6 +800,21 @@ async function fetchCloudSubsLatest() {
   return Array.isArray(rec.submissions) ? rec.submissions : [];
 }
 
+/* 从云端拉取最新「收集周」并同步到本地（best-effort；失败不阻断提交）。
+   作用：页面若停留在旧周（未刷新），提交时以云端为准，避免把数据写进已关闭的旧周。 */
+async function syncActiveWeekFromCloud() {
+  try {
+    const rec = await fetchCloudRecord();
+    if (rec && typeof rec.activeWeek === 'string' && rec.activeWeek) {
+      const changed = rec.activeWeek !== activeWeek();
+      setActiveWeek(rec.activeWeek);
+      if (changed) updateFormWeekHint();
+      return changed;
+    }
+  } catch (e) { /* 离线：沿用本地判断 */ }
+  return false;
+}
+
 async function pushSubmission(rec, wk) {
   const k = wk + '|' + (rec.manager || '') + '|' + (rec.shortName || '');
   const entry = Object.assign({}, rec, { wk: wk, _k: k, syncedAt: Date.now() });
@@ -1007,6 +1049,22 @@ function fmt2(v) {
   if (v == null || v === '') return '';
   const n = Number(v);
   return isNaN(n) ? String(v) : n.toFixed(2);
+}
+/* 金额千分位 + 两位小数（用于看板汇总展示） */
+function fmtMoney(v) {
+  const n = Number(v) || 0;
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+/* 写汇总数字，负值标红 */
+function setSumVal(id, text, neg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = 'sum-val' + (neg ? ' neg' : '');
+}
+/* 汇总：对某周记录求和（金额字段缺失按 0） */
+function sumOfRecords(recs, field) {
+  return (recs || []).reduce(function (s, r) { return s + (Number(r[field]) || 0); }, 0);
 }
 
 /* ========== 存储 ========== */
@@ -1265,8 +1323,10 @@ function showSubmittedHint(show, text) {
   if (show) document.getElementById('submittedTime').textContent = text;
 }
 
-function onSubmit(e) {
-  e.preventDefault();
+let _submitting = false;
+async function onSubmit(e) {
+  e.preventDefault();            // 必须同步调用，不能放在任何 await 之后
+  if (_submitting) return;       // 防连点重复提交
   const manager = document.getElementById('managerName').value;
   const shortName = document.getElementById('projectShortName').value;
   const status = document.getElementById('projectStatus').value;
@@ -1305,59 +1365,75 @@ function onSubmit(e) {
   if (benV == null || isNaN(benV)) return showToast('请填写「目标效益」', 'error');
   if (amtV < 0 || costV < 0) return showToast('金额不能为负数', 'error');
 
-  /* 覆盖已有提交时二次确认 */
-  const store0 = loadStore();
-  const wkNow = activeWeek();
-  const already = (store0.weeks[wkNow] || []).some(r => r.manager === manager && r.shortName === shortName);
-  if (already && !confirm('本项目本周已提交过，再次提交将覆盖原记录。\n确认要覆盖吗？')) return;
+  /* 提交前校正「收集周」：以云端为准，避免页面停留在旧周时把数据写进已关闭的旧周 */
+  const btnSubmit = document.getElementById('submitBtn');
+  _submitting = true;
+  if (btnSubmit) btnSubmit.disabled = true;
+  try {
+    const weekBefore = activeWeek();
+    await syncActiveWeekFromCloud();
+    if (activeWeek() !== weekBefore) {
+      showToast('收集周已更新为「' + weekLabel(activeWeek(), false) + '」，本次计入新周', 'success');
+    }
 
-  const rec = {
-    manager,
-    shortName,
-    projectName: currentProject ? currentProject.n : '',
-    leader: document.getElementById('stlLeader').value.trim(),
-    status,
-    requiredDate: requiredDate,
-    urgeDate: document.getElementById('stlUrgeDate').value,
-    method: methodVal,
-    targetAmount: amtV,
-    estCost: costV,
-    targetBenefit: benV,
-    lines,
-    record: editorToText(lines),
-    ts: Date.now()
-  };
+    /* 覆盖已有提交时二次确认（本地记录 + 云端记录都判断） */
+    const wkNow = activeWeek();
+    const store0 = loadStore();
+    const alreadyLocal = (store0.weeks[wkNow] || []).some(r => r.manager === manager && r.shortName === shortName);
+    const alreadyCloud = (CLOUD_SUBS || []).some(r => r.wk === wkNow && r.manager === manager && r.shortName === shortName);
+    if ((alreadyLocal || alreadyCloud) && !confirm('本项目本周已提交过，再次提交将覆盖原记录。\n确认要覆盖吗？')) return;
 
-  const store = loadStore();
-  const key = activeWeek();
-  if (!store.weeks[key]) store.weeks[key] = [];
-  const idx = store.weeks[key].findIndex(r => r.manager === manager && r.shortName === shortName);
-  if (idx >= 0) store.weeks[key][idx] = rec; else store.weeks[key].push(rec);
-  saveStore(store);
+    const rec = {
+      manager,
+      shortName,
+      projectName: currentProject ? currentProject.n : '',
+      leader: document.getElementById('stlLeader').value.trim(),
+      status,
+      requiredDate: requiredDate,
+      urgeDate: document.getElementById('stlUrgeDate').value,
+      method: methodVal,
+      targetAmount: amtV,
+      estCost: costV,
+      targetBenefit: benV,
+      lines,
+      record: editorToText(lines),
+      ts: Date.now()
+    };
 
-  /* 保留历史快照（仅本地），覆盖后仍可找回 */
-  pushHistory(rec, manager + '|' + shortName + '|' + key);
-  clearDraft();
+    const store = loadStore();
+    const key = activeWeek();
+    if (!store.weeks[key]) store.weeks[key] = [];
+    const idx = store.weeks[key].findIndex(r => r.manager === manager && r.shortName === shortName);
+    if (idx >= 0) store.weeks[key][idx] = rec; else store.weeks[key].push(rec);
+    saveStore(store);
 
-  // 同步到云端提交 bin（独立 bin，公开可读；写入用受限密钥），便于统一汇总
-  pushSubmission(rec, key).then(function () {
-    if (dashOK) loadDashboard();
+    /* 保留历史快照（仅本地），覆盖后仍可找回 */
+    pushHistory(rec, manager + '|' + shortName + '|' + key);
+    clearDraft();
+
+    // 同步到云端提交 bin（独立 bin，公开可读；写入用受限密钥），便于统一汇总
+    pushSubmission(rec, key).then(function () {
+      if (dashOK) loadDashboard();
+      updatePendingBadge();
+      updateCloudStatus();
+      showToast('提交成功（已同步云端）', 'success');
+    }).catch(function (err) {
+      showToast('云端同步失败（本地已保存，可稍后点「重试同步」）：' + (err && err.message ? err.message : err), 'error');
+      updateCloudStatus();
+    });
+
+    showSubmittedHint(true, '本项目本周结算进展已提交（' + fmtTime(rec.ts) + '），如需修改可直接改后再次提交覆盖。');
+    showToast('已保存，正在同步云端…', 'success');
     updatePendingBadge();
-    updateCloudStatus();
-    showToast('提交成功（已同步云端）', 'success');
-  }).catch(function (err) {
-    showToast('云端同步失败（本地已保存，可稍后点「重试同步」）：' + (err && err.message ? err.message : err), 'error');
-    updateCloudStatus();
-  });
-
-  showSubmittedHint(true, '本项目本周结算进展已提交（' + fmtTime(rec.ts) + '），如需修改可直接改后再次提交覆盖。');
-  showToast('已保存，正在同步云端…', 'success');
-  updatePendingBadge();
-  // 回填合并后的文字
-  document.querySelectorAll('#settleEditor .record-user').forEach(el => {
-    el.textContent = lines[Number(el.dataset.line)] || '';
-    el.dataset.touched = '';
-  });
+    // 回填合并后的文字
+    document.querySelectorAll('#settleEditor .record-user').forEach(el => {
+      el.textContent = lines[Number(el.dataset.line)] || '';
+      el.dataset.touched = '';
+    });
+  } finally {
+    _submitting = false;
+    if (btnSubmit) btnSubmit.disabled = false;
+  }
 }
 
 /* ===== 草稿自动保存（手机端误关页面不丢内容） ===== */
@@ -1581,6 +1657,30 @@ function loadDashboard() {
   banner.style.display = 'block';
   banner.textContent = '📅 当前查看：' + weekLabel(key) + '　｜　本周共 ' + recs.length + ' 条结算进展记录，涉及 ' + done + ' 位项目经理。';
 
+  // 汇总区：金额合计 + 状态分布
+  const sumAmount = sumOfRecords(recs, 'targetAmount');
+  const sumCost = sumOfRecords(recs, 'estCost');
+  const sumBenefit = sumOfRecords(recs, 'targetBenefit');
+  setSumVal('sumAmount', fmtMoney(sumAmount), sumAmount < 0);
+  setSumVal('sumCost', fmtMoney(sumCost), sumCost < 0);
+  setSumVal('sumBenefit', fmtMoney(sumBenefit), sumBenefit < 0);
+  const rateEl = document.getElementById('sumRate');
+  if (rateEl) {
+    rateEl.textContent = sumAmount ? (sumBenefit / sumAmount * 100).toFixed(1) + '%' : '—';
+    rateEl.className = 'sum-val' + (sumBenefit < 0 ? ' neg' : '');
+  }
+  const distEl = document.getElementById('statusDist');
+  if (distEl) {
+    const order = ['完工未结', '阶段结算', '完工已结', '在建'];
+    const cnt = {};
+    recs.forEach(function (r) { const k = r.status || '未填'; cnt[k] = (cnt[k] || 0) + 1; });
+    const keys2 = order.filter(function (k) { return cnt[k]; })
+      .concat(Object.keys(cnt).filter(function (k) { return order.indexOf(k) < 0; }));
+    distEl.innerHTML = keys2.length
+      ? keys2.map(function (k) { return '<span class="status-chip">' + esc(k) + ' <b>' + cnt[k] + '</b></span>'; }).join('')
+      : '<span class="status-chip">本周暂无提交</span>';
+  }
+
   // 经理卡片
   const grid = document.getElementById('mgrGrid');
   grid.innerHTML = '';
@@ -1677,6 +1777,103 @@ function exportCSV(rows, key) {
   a.download = '华南结算进展_' + key + '.csv';
   a.click();
   showToast('Excel 组件不可用，已导出 CSV（可直接用 Excel 打开）', 'success');
+}
+
+/* Excel 工作表名禁止 / \ ? * [ ] : —— 用 . 替换，并限长 31 */
+function sheetNameOf(k) {
+  return weekLabel(k, false).replace(/[\/\\?*\[\]:]/g, '.').slice(0, 31);
+}
+
+/* 导出「全部周」：Excel = 汇总表 + 每周一个分表；无 XLSX 时降级为带「周」列的单张 CSV */
+function exportAllWeeks() {
+  const weeks = mergedWeeks();
+  const keys = Object.keys(weeks).filter(function (k) { return (weeks[k] || []).length; }).sort();
+  if (!keys.length) return showToast('暂无数据可导出', 'error');
+
+  const cols = ['项目经理', '项目简称', '项目名称', '包保领导', '项目状态', '要求完成结算时间', '催办结算时间', '结算方式',
+    '目标结算额(不含税,万)', '预估总成本(不含税,万)', '目标效益(不含税,万)',
+    '本周结算进展', '下周结算计划', '目前存在的问题', '需分公司/公司协调事项', '本周对接的“甲方人员”', '提交时间'];
+  const rowOf = function (r, i) {
+    const l = r.lines || [];
+    return [i + 1, r.manager, r.shortName, r.projectName, r.leader || '', r.status, r.requiredDate, r.urgeDate || '', r.method,
+      fmt2(r.targetAmount), fmt2(r.estCost), fmt2(r.targetBenefit),
+      l[1] || '', l[2] || '', l[3] || '', l[4] || '', l[5] || '', fmtTime(r.ts)];
+  };
+  const sorted = function (k) {
+    return (weeks[k] || []).slice().sort(function (a, b) { return a.manager > b.manager ? 1 : -1; });
+  };
+
+  if (typeof XLSX === 'undefined') {
+    const rows = [['周'].concat(cols)];
+    keys.forEach(function (k) {
+      sorted(k).forEach(function (r, i) { rows.push([weekLabel(k, false)].concat(rowOf(r, i))); });
+    });
+    return exportCSV(rows, '全部周');
+  }
+
+  const wb = XLSX.utils.book_new();
+  const sumRows = [['周', '条数', '人数', '目标结算额合计(万)', '预估总成本合计(万)', '目标效益合计(万)', '效益率']];
+  keys.forEach(function (k) {
+    const rs = sorted(k);
+    const a = sumOfRecords(rs, 'targetAmount');
+    const c = sumOfRecords(rs, 'estCost');
+    const b = sumOfRecords(rs, 'targetBenefit');
+    sumRows.push([weekLabel(k, false), rs.length, new Set(rs.map(function (r) { return r.manager; })).size,
+      fmt2(a), fmt2(c), fmt2(b), a ? (b / a * 100).toFixed(1) + '%' : '—']);
+  });
+  const wsSum = XLSX.utils.aoa_to_sheet(sumRows);
+  wsSum['!cols'] = [{ wch: 22 }, { wch: 8 }, { wch: 8 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, { wch: 10 }];
+  XLSX.utils.book_append_sheet(wb, wsSum, '汇总');
+
+  const wcols = [{ wch: 5 }, { wch: 10 }, { wch: 14 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 16 }, { wch: 16 }, { wch: 12 },
+    { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 50 }, { wch: 40 }, { wch: 40 }, { wch: 40 }, { wch: 24 }, { wch: 18 }];
+  keys.forEach(function (k) {
+    const rows = [['#'].concat(cols)];
+    sorted(k).forEach(function (r, i) { rows.push(rowOf(r, i)); });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = wcols;
+    XLSX.utils.book_append_sheet(wb, ws, sheetNameOf(k));
+  });
+  XLSX.writeFile(wb, '华南结算进展_全部周_' + new Date().toISOString().slice(0, 10) + '.xlsx');
+  showToast('已导出全部 ' + keys.length + ' 周', 'success');
+}
+
+/* ===== 未提交名单（一键复制，便于催报） ===== */
+function pendingManagersOf(key) {
+  const recs = (mergedWeeks()[key] || []);
+  const done = new Set(recs.map(function (r) { return r.manager; }));
+  return REPORT_MANAGERS.filter(function (m) { return !done.has(m); });
+}
+function copyText(txt, cb) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(function () { cb(true); }, function () { cb(fallbackCopy(txt)); });
+  } else {
+    cb(fallbackCopy(txt));
+  }
+}
+function fallbackCopy(txt) {
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = txt;
+    ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+function copyPendingList() {
+  const sel = document.getElementById('weekSelector');
+  const key = (sel && sel.value) || activeWeek();
+  const pending = pendingManagersOf(key);
+  const total = REPORT_MANAGERS.length;
+  if (!pending.length) return showToast('本周已全部提交（共 ' + total + ' 人）', 'success');
+  const txt = '【' + weekLabel(key, false) + '】尚未提交结算进展（' + pending.length + '/' + total + ' 人）：\n' + pending.join('、');
+  copyText(txt, function (ok) {
+    if (ok) showToast('已复制未提交名单（' + pending.length + ' 人），可直接粘贴到群里', 'success');
+    else window.prompt('复制失败，请手动复制：', txt);
+  });
 }
 
 /* 重试同步：补传因网络问题未成功写入云端的提交 */
@@ -1800,6 +1997,15 @@ async function openNextWeek() {
     if (btn) { btn.disabled = false; btn.textContent = old; }
   }
 }
+
+/* 切回页面时顺带刷新「收集周」（节流 60s；best-effort） */
+let _lastWeekSync = 0;
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState !== 'visible') return;
+  if (Date.now() - _lastWeekSync < 60000) return;
+  _lastWeekSync = Date.now();
+  syncActiveWeekFromCloud();
+});
 
 document.addEventListener('DOMContentLoaded', initForm);
 
